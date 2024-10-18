@@ -8,7 +8,7 @@ def main():
     api_key = st.sidebar.text_input("Enter your OpenAI API Key:", type="password")
 
     # Model selection
-    model_options = ["gpt-3.5", "gpt-4o"]
+    model_options = ["gpt-3.5-turbo", "gpt-4o"]
     selected_model = st.sidebar.selectbox("Choose a model:", model_options, index=1)  # Default to gpt-4o
 
     # Parameter presets
