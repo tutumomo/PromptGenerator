@@ -5,8 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > 一個強大的 AI 提示詞優化工具，支援多種 AI 模型 API，幫助您生成更好的提示詞。
-
-![專案截圖](screenshot.png)
+![專案截圖](https://github.com/user-attachments/assets/abb1fc15-e4f3-46ab-8b5a-02f20b0e7391)
 
 ## 支援的 API
 - OpenAI (GPT-3.5/GPT-4)
