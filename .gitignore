@@ -42,3 +42,6 @@ prompt_history.json
 # OS
 .DS_Store
 Thumbs.db
+
+# 忽略提示詞歷史記錄
+prompts_history/
