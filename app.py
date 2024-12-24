@@ -1,52 +1,169 @@
+# 修改 import 區塊
 import streamlit as st
 import requests
-from typing import List
+from typing import List, Tuple
 from dotenv import load_dotenv
 import json
 from datetime import datetime
 import pathlib
 import os
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
 
 load_dotenv()  # 載入 .env 文件中的環境變數
+
+# 環境變數映射
+ENV_VAR_MAP = {
+    "X.AI": "XAI_API_KEY",
+    "Mistral": "MISTRAL_API_KEY"
+}
+
+XAI_MODELS = [
+    "grok-2",           # 最新的 grok-2 模型
+    "grok-2-vision-1212", # 支援視覺功能的 grok-2
+    "grok-beta",        # 原始的 grok 模型
+    "grok-vision-beta"  # 原始的視覺模型
+]
+
+def get_api_key(api_type: str) -> Tuple[str, str]:
+    """
+    檢查並獲取 API 金鑰
+    返回: (api_key, message)
+    """
+    env_var = ENV_VAR_MAP.get(api_type)
+    if not env_var:
+        return None, ""
+        
+    api_key = os.getenv(env_var)
+    if api_key:
+        return api_key, f"✅ 已從環境變數 {env_var} 讀取 API 金鑰"
+    return None, f"💡 可以設置環境變數 {env_var} 來儲存 API 金鑰"
 
 # 修改 system prompt 常量
 PROMPT_IMPROVEMENT_TEMPLATE = '''
 # 角色 
-你是一位AI prompt 專家，熟悉各種Prompt Optimizer框架(APE、CARE、CHAT、COAST、CREAT、CRISPE、RASCEF、RTF為主)，可以將使用者輸入的提示詞選定合適的Prompt框架後，編撰和優化AI prompts。
+你是一位AI prompt 專家，熟悉各種Prompt Optimizer框架(APE、CARE、CHAT、COAST、CREAT、CRISPE、RASCEF、RTF為主)，可以將使用者輸入的提示詞選定合適的Prompt框架後，編撰和優AI prompts。
 ## 重要:
 - 無論提問使用何種語言，一律以繁體中文進行回答(禁用簡體中文，且須符合台灣用語習慣)。 
 
-請分析並改進以下提示詞:
+請分析並改進下提示詞:
 {original_prompt}
 
 只返回優化後的提示詞，不要有其他說明文字、標題或解釋(返回結果不要有"# 優化後提示詞："的字眼).
 '''
 
-# Ollama API 調用函數
-def call_ollama(model_name, prompt, temperature, top_p, top_k, repeat_penalty, max_tokens):
+# 修改 execute_prompt 函數以支援不同的 API
+def execute_prompt(api_type: str, model: str, prompt: str, temperature: float, top_p: float, top_k: int, repeat_penalty: float, max_tokens: int, api_key: str = None) -> str:
     """
-    調用本地 Ollama API 來改進提示詞
+    執行提示詞並回傳生成的內容
     """
     try:
-        prompt_template = PROMPT_IMPROVEMENT_TEMPLATE.format(original_prompt=prompt)
-        
-        response = requests.post(
-            'http://localhost:11434/api/generate',
-            json={
-                "model": model_name,
-                "prompt": prompt_template,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "repeat_penalty": repeat_penalty,
-                "num_predict": max_tokens,  # Ollama 使用 num_predict 作為 max_tokens
-                "stream": False
+        if api_type == "Ollama":
+            response = requests.post(
+                'http://localhost:11434/api/generate',
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "repeat_penalty": repeat_penalty,
+                    "num_predict": max_tokens,
+                    "stream": True
+                },
+                stream=True
+            )
+            
+            # 建立一個佔位元素來顯示生成的文本
+            placeholder = st.empty()
+            generated_text = ""
+            
+            for line in response.iter_lines():
+                if line:
+                    json_response = json.loads(line)
+                    chunk = json_response.get('response', '')
+                    generated_text += chunk
+                    # 更新顯示的文本
+                    placeholder.markdown(generated_text + "▌")
+            
+            # 最後移除游標並返回完整文本
+            placeholder.markdown(generated_text)
+            return generated_text
+            
+        elif api_type == "X.AI":
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
             }
-        )
-        return response.json().get('response', '生成失敗：無回應內容')
+            
+            response = requests.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": True
+                },
+                stream=True
+            )
+            
+            placeholder = st.empty()
+            generated_text = ""
+            
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        json_str = line[6:]
+                        if json_str.strip() == '[DONE]':
+                            break
+                        try:
+                            chunk_data = json.loads(json_str)
+                            if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
+                                choice = chunk_data['choices'][0]
+                                if 'delta' in choice and 'content' in choice['delta']:
+                                    chunk = choice['delta']['content']
+                                    generated_text += chunk
+                                    placeholder.markdown(generated_text + "▌")
+                        except json.JSONDecodeError:
+                            continue
+            
+            placeholder.markdown(generated_text)
+            return generated_text if generated_text else "未能生成回應"
+            
+        else:  # Mistral
+            client = MistralClient(api_key=api_key)
+            
+            placeholder = st.empty()
+            generated_text = ""
+            
+            try:
+                messages = [{"role": "user", "content": prompt}]
+                
+                # 使用串流模式
+                for chunk in client.chat_stream(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                ):
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        generated_text += content
+                        placeholder.markdown(generated_text + "▌")
+                
+                placeholder.markdown(generated_text)
+                return generated_text
+                    
+            except Exception as e:
+                error_msg = f"Mistral API 錯誤: {str(e)}"
+                st.error(error_msg)
+                return error_msg
             
     except Exception as e:
-        return f"調用 Ollama 失敗: {str(e)}"
+        return f"生成失敗: {str(e)}"
 
 # 新增函數來獲取 Ollama 模型列表
 def get_ollama_models() -> List[str]:
@@ -90,28 +207,34 @@ def save_prompt_history(original_prompt: str, improved_prompt: str, generated_co
         st.error(f"儲存失敗: {str(e)}")
         return False
 
-# 執行提示詞函數
-def execute_prompt(model: str, prompt: str, temperature: float, top_p: float, top_k: int, repeat_penalty: float, max_tokens: int) -> str:
+# 在 import 區塊添加新的函數
+def get_mistral_models(api_key: str) -> List[str]:
     """
-    執行提示詞並回傳生成的內容
+    從 Mistral API 獲取可用的模型列表
     """
+    default_models = [
+        "mistral-medium",
+        "mistral-small",
+        "mistral-tiny"
+    ]
+    
+    if not api_key:
+        return default_models
+        
     try:
-        response = requests.post(
-            'http://localhost:11434/api/generate',
-            json={
-                "model": model,
-                "prompt": prompt,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "repeat_penalty": repeat_penalty,
-                "num_predict": max_tokens,  # Ollama 使用 num_predict 作為 max_tokens
-                "stream": False
-            }
-        )
-        return response.json().get('response', '生成失敗：無回應內容')
+        client = MistralClient(api_key=api_key)
+        models = client.list_models()
+        # 檢查回應格式並適當處理
+        if isinstance(models, (list, tuple)):
+            return [str(model) for model in models] if models else default_models
+        elif hasattr(models, 'data'):
+            return [model.id for model in models.data] if models.data else default_models
+        else:
+            st.warning("無法解析模型列表，使用預設值")
+            return default_models
     except Exception as e:
-        return f"生成失敗: {str(e)}"
+        st.error(f"獲取 Mistral 模型列表失敗: {str(e)}")
+        return default_models
 
 def main():
     st.title("AI 提示詞優化器")
@@ -119,13 +242,53 @@ def main():
     with st.sidebar:
         st.header("設定")
         
+        # API 選擇
+        api_options = ["Ollama", "X.AI", "Mistral"]
+        selected_api = st.selectbox("選擇 API:", api_options, index=0)
+        
+        # API 金鑰輸入（如果需要）
+        if selected_api in ["X.AI", "Mistral"]:
+            env_api_key, env_message = get_api_key(selected_api)
+            st.info(env_message)
+            
+            api_key = st.text_input(
+                f"{selected_api} API Key:",
+                value=env_api_key if env_api_key else "",
+                type="password",
+                help=f"請輸入您的 {selected_api} API 金鑰，或在環境變數中設置 {ENV_VAR_MAP[selected_api]}"
+            )
+        else:
+            api_key = None
+
         # 模型選擇
-        model_options = get_ollama_models()
-        selected_model = st.selectbox(
-            "選擇本地模型:", 
-            model_options, 
-            index=model_options.index("aya-expanse") if "aya-expanse" in model_options else 0
-        )
+        if selected_api == "Ollama":
+            model_options = get_ollama_models()
+            selected_model = st.selectbox(
+                "選擇本地模型:", 
+                model_options, 
+                index=model_options.index("aya-expanse") if "aya-expanse" in model_options else 0
+            )
+        elif selected_api == "X.AI":
+            selected_model = st.selectbox(
+                "選擇模型:",
+                XAI_MODELS,
+                help="X.AI 提供的大型語言模型。grok-1 是最新版本，支援更多功能。"
+            )
+        else:  # Mistral
+            if api_key:
+                model_options = get_mistral_models(api_key)
+            else:
+                model_options = [
+                    "mistral-tiny-2402",
+                    "mistral-small-2402",
+                    "mistral-medium-2402",
+                    "mistral-large-2402"
+                ]
+            selected_model = st.selectbox(
+                "選擇模型:",
+                model_options,
+                help="Mistral AI 提供的大型語言模型"
+            )
 
         # 參數設定
         st.header("參數設定")
@@ -179,7 +342,7 @@ def main():
     st.header("輸入原始提示詞")
     original_prompt = st.text_area(
         "請輸入你想要優化的提示詞:",
-        help="輸入你的原始提示詞，AI 將幫助你改進使其更加有效。",
+        help="輸入你的原始提示詞，AI 將幫助你進使其更加有效。",
         height=150
     )
 
@@ -191,18 +354,25 @@ def main():
         if not original_prompt:
             st.error("請輸入原始提示。")
             return
+            
+        if selected_api in ["X.AI", "Mistral"] and not api_key:
+            st.error(f"請輸入 {selected_api} API 金鑰。")
+            return
 
         try:
             with st.spinner('優化中...'):
-                response = call_ollama(
-                    selected_model, 
-                    original_prompt, 
+                response = execute_prompt(
+                    selected_api,
+                    selected_model,
+                    PROMPT_IMPROVEMENT_TEMPLATE.format(original_prompt=original_prompt),
                     temperature,
                     top_p,
                     top_k,
                     repeat_penalty,
-                    max_tokens
+                    max_tokens,
+                    api_key
                 )
+                
                 st.session_state.improved_prompt = response
                 
                 # 儲存優化結果
@@ -238,13 +408,15 @@ def main():
                 )
                 
                 generated_content = execute_prompt(
+                    selected_api,
                     selected_model, 
                     final_prompt, 
                     temperature,
                     top_p,
                     top_k,
                     repeat_penalty,
-                    max_tokens
+                    max_tokens,
+                    api_key
                 )
                 
                 # 儲存生成結果
