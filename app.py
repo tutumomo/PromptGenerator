@@ -57,6 +57,181 @@ def execute_prompt(api_type: str, model: str, prompt: str, temperature: float, t
     """
     執行提示詞並回傳生成的內容
     """
+    placeholder = st.empty()
+    generated_text = ""
+    try:
+        if api_type == "Ollama":
+            try:
+                response = requests.post(
+                    'http://localhost:11434/api/generate',
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "top_p": top_p,
+                        "top_k": top_k,
+                        "repeat_penalty": repeat_penalty,
+                        "num_predict": max_tokens,
+                        "stream": True
+                    },
+                    stream=True,
+                    timeout=10  # 設定逾時時間
+                )
+                response.raise_for_status()  # 檢查是否有 HTTP 錯誤
+                for line in response.iter_lines():
+                    if line:
+                        json_response = json.loads(line)
+                        chunk = json_response.get('response', '')
+                        generated_text += chunk
+                        placeholder.markdown(generated_text + "▌")
+                placeholder.markdown(generated_text)
+                return generated_text
+            except requests.exceptions.RequestException as e:
+                error_msg = f"Ollama API 請求錯誤: {str(e)}"
+                st.error(error_msg)
+                return error_msg
+            except json.JSONDecodeError as e:
+                error_msg = f"Ollama API 回應解析錯誤: {str(e)}"
+                st.error(error_msg)
+                return error_msg
+
+        elif api_type == "X.AI":
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            try:
+                response = requests.post(
+                    "https://api.x.ai/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stream": True
+                    },
+                    stream=True,
+                    timeout=10  # 設定逾時時間
+                )
+                response.raise_for_status()  # 檢查是否有 HTTP 錯誤
+                for line in response.iter_lines():
+                    if line:
+                        line = line.decode('utf-8')
+                        if line.startswith('data: '):
+                            json_str = line[6:]
+                            if json_str.strip() == '[DONE]':
+                                break
+                            try:
+                                chunk_data = json.loads(json_str)
+                                if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
+                                    choice = chunk_data['choices'][0]
+                                    if 'delta' in choice and 'content' in choice['delta']:
+                                        chunk = choice['delta']['content']
+                                        generated_text += chunk
+                                        placeholder.markdown(generated_text + "▌")
+                            except json.JSONDecodeError:
+                                continue
+                placeholder.markdown(generated_text)
+                return generated_text if generated_text else "未能生成回應"
+            except requests.exceptions.RequestException as e:
+                error_msg = f"X.AI API 請求錯誤: {str(e)}"
+                st.error(error_msg)
+                return error_msg
+            except json.JSONDecodeError as e:
+                error_msg = f"X.AI API 回應解析錯誤: {str(e)}"
+                st.error(error_msg)
+                return error_msg
+
+        else:  # Mistral
+            if not api_key:
+                st.error("Mistral API 金鑰未提供。")
+                return "Mistral API 金鑰未提供。"
+            try:
+                client = MistralClient(api_key=api_key)
+                messages = [{"role": "user", "content": prompt}]
+                for chunk in client.chat_stream(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=10 # 設定逾時時間
+                ):
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        generated_text += content
+                        placeholder.markdown(generated_text + "▌")
+                placeholder.markdown(generated_text)
+                return generated_text
+
+            except Exception as e:
+                error_msg = f"Mistral API 錯誤: {str(e)}"
+                st.error(error_msg)
+                return error_msg
+
+    except Exception as e:
+        error_msg = f"生成失敗: {str(e)}"
+        st.error(error_msg)
+        return error_msg
+# 修改 import 區塊
+import streamlit as st
+import requests
+from typing import List, Tuple
+from dotenv import load_dotenv
+import json
+from datetime import datetime
+import pathlib
+import os
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
+
+load_dotenv()  # 載入 .env 文件中的環境變數
+
+# 環境變數映射
+ENV_VAR_MAP = {
+    "X.AI": "XAI_API_KEY",
+    "Mistral": "MISTRAL_API_KEY"
+}
+
+XAI_MODELS = [
+    "grok-2",           # 最新的 grok-2 模型
+    "grok-2-vision-1212", # 支援視覺功能的 grok-2
+    "grok-beta",        # 原始的 grok 模型
+    "grok-vision-beta"  # 原始的視覺模型
+]
+
+def get_api_key(api_type: str) -> Tuple[str, str]:
+    """
+    檢查並獲取 API 金鑰
+    返回: (api_key, message)
+    """
+    env_var = ENV_VAR_MAP.get(api_type)
+    if not env_var:
+        return None, ""
+        
+    api_key = os.getenv(env_var)
+    if api_key:
+        return api_key, f"✅ 已從環境變數 {env_var} 讀取 API 金鑰"
+    return None, f"💡 可以設置環境變數 {env_var} 來儲存 API 金鑰"
+
+# 修改 system prompt 常量
+PROMPT_IMPROVEMENT_TEMPLATE = '''
+# 角色 
+你是一位AI prompt 專家，熟悉各種Prompt Optimizer框架(APE、CARE、CHAT、COAST、CREAT、CRISPE、RASCEF、RTF為主)，可以將使用者輸入的提示詞選定合適的Prompt框架後，編撰和優AI prompts。
+## 重要:
+- 無論提問使用何種語言，一律以繁體中文進行回答(禁用簡體中文，且須符合台灣用語習慣)。 
+
+請分析並改進下提示詞:
+{original_prompt}
+
+只返回優化後的提示詞，不要有其他說明文字、標題或解釋(返回結果不要有"# 優化後提示詞："的字眼).
+'''
+
+# 修改 execute_prompt 函數以支援不同的 API
+def execute_prompt(api_type: str, model: str, prompt: str, temperature: float, top_p: float, top_k: int, repeat_penalty: float, max_tokens: int, api_key: str = None) -> str:
+    """
+    執行提示詞並回傳生成的內容
+    """
     try:
         if api_type == "Ollama":
             response = requests.post(
@@ -251,10 +426,13 @@ def main():
             env_api_key, env_message = get_api_key(selected_api)
             st.info(env_message)
             
+            api_key_input_type = 'password'
+            if st.checkbox("顯示 API 金鑰", False):
+                api_key_input_type = 'text'
             api_key = st.text_input(
                 f"{selected_api} API Key:",
                 value=env_api_key if env_api_key else "",
-                type="password",
+                type=api_key_input_type,
                 help=f"請輸入您的 {selected_api} API 金鑰，或在環境變數中設置 {ENV_VAR_MAP[selected_api]}"
             )
         else:
